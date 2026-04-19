@@ -492,6 +492,31 @@ const emptyClass = { id: '', name: '', section: '' };
 const emptySubject = { id: '', name: '', code: '' };
 const emptyStudent = { id: '', full_name: '', class_id: '', student_section: '', gender: 'Male', dob: '', parent_full_name: '', parent_phone_contact: '', relationship: 'Parent', photo_url: '', student_number: '', account_active: true };
 const emptyParentSelection = { parent_id: '', account_status: 'Active' };
+function deriveParentsFromStudents(students = [], existingParents = []) {
+  const existingByKey = new Map((existingParents || []).map(parent => [`${String(parent.full_name || '').trim().toLowerCase()}|${String(parent.phone_contact || '').trim()}`, parent]));
+  const grouped = new Map();
+  (students || []).forEach(student => {
+    const fullName = String(student.parent_full_name || '').trim();
+    const phone = String(student.parent_phone_contact || '').trim();
+    if (!fullName || !phone) return;
+    const key = `${fullName.toLowerCase()}|${phone}`;
+    if (!grouped.has(key)) {
+      const existing = existingByKey.get(key);
+      grouped.set(key, {
+        id: existing?.id || uid(),
+        full_name: fullName,
+        phone_contact: phone,
+        relationship: student.relationship || existing?.relationship || 'Parent',
+        linked_student_ids: [],
+        account_status: existing?.account_status || 'Active'
+      });
+    }
+    const row = grouped.get(key);
+    if (!row.linked_student_ids.includes(student.id)) row.linked_student_ids.push(student.id);
+    if (!row.relationship && student.relationship) row.relationship = student.relationship;
+  });
+  return Array.from(grouped.values());
+}
 const emptyFee = { id: '', class_id: '', student_id: '', academic_year: new Date().getFullYear().toString(), term: 'Term 1', amount_due: '', amount_paid: '', payment_method: 'Cash' };
 const emptyAttendance = { id: '', class_id: '', student_id: '', status: 'Present', remarks: '', date: today() };
 const emptyGrade = { id: '', class_id: '', student_id: '', subject_id: '', term: 'Term 1', academic_year: new Date().getFullYear().toString(), mid_exam_30: '', end_exam_70: '', is_published: false, published_at: null };
@@ -871,13 +896,46 @@ async function syncStudents(prevItems, nextItems) {
 }
 
 async function syncParents(prevItems, nextItems) {
+  const prevMap = new Map((prevItems || []).map(item => [item.id, item]));
   const nextMap = new Map((nextItems || []).map(item => [item.id, item]));
-  for (const item of prevItems || []) {
-    if (!nextMap.has(item.id)) continue;
+  for (const prev of prevItems || []) {
+    if (!nextMap.has(prev.id) && dbId(prev.id)) {
+      await supabase.from('parent_student_links').delete().eq('parent_id', prev.id);
+      await supabase.from('user_credentials').delete().eq('role', 'parent').eq('linked_entity_id', prev.id);
+      await supabase.from('chat_messages').delete().eq('sender_role', 'parent').eq('sender_id', prev.id);
+      await supabase.from('chat_messages').delete().eq('receiver_role', 'parent').eq('receiver_id', prev.id);
+      await supabase.from('presence_status').delete().eq('role', 'parent').eq('linked_entity_id', prev.id);
+      const { error: deleteError } = await supabase.from('parents').delete().eq('id', prev.id);
+      if (deleteError) throw deleteError;
+    }
   }
   for (const item of nextItems || []) {
-    const { error } = await supabase.from('parents').update({ account_status: item.account_status, phone_contact: item.phone_contact || null, relationship: item.relationship || null, full_name: item.full_name }).eq('id', item.id);
+    const fullName = String(item.full_name || '').trim();
+    const phone = String(item.phone_contact || '').trim() || null;
+    let parentId = dbId(item.id);
+    if (!parentId && fullName) {
+      let query = supabase.from('parents').select('id, full_name, phone_contact').eq('full_name', fullName);
+      if (phone) query = query.eq('phone_contact', phone);
+      const { data: existingParent, error: existingParentError } = await query.maybeSingle();
+      if (existingParentError) throw existingParentError;
+      if (existingParent?.id) parentId = existingParent.id;
+    }
+    const row = {
+      id: parentId,
+      full_name: fullName,
+      phone_contact: phone,
+      relationship: item.relationship || null,
+      account_status: item.account_status || 'Active'
+    };
+    const { data: savedParent, error } = await supabase.from('parents').upsert(row).select().single();
     if (error) throw error;
+    parentId = savedParent.id;
+    await supabase.from('parent_student_links').delete().eq('parent_id', parentId);
+    const linkRows = safeArray(item.linked_student_ids).map(studentId => dbId(studentId)).filter(Boolean).map(studentId => ({ parent_id: parentId, student_id: studentId }));
+    if (linkRows.length) {
+      const { error: linkError } = await supabase.from('parent_student_links').insert(linkRows);
+      if (linkError) throw linkError;
+    }
   }
 }
 
@@ -1517,8 +1575,27 @@ function TeacherManagement() {
 function StudentManagement() {
   const { data, updateCollection, notify } = React.useContext(DataContext); const [open, setOpen] = React.useState(false); const [form, setForm] = React.useState(emptyStudent);
   const promotionYear = latestAcademicYearFromGrades(data.grades);
-  const save = async e => { e.preventDefault(); const prefix = numberPrefix(data.schoolSettings.school_name, 'STU'); const selectedClass = data.classes.find(c => c.id === form.class_id); const payload = { ...form, id: form.id || uid(), student_number: form.student_number || `${prefix}${String(data.students.length + 2001).padStart(5,'0')}`, student_section: form.student_section || selectedClass?.section || '', account_active: form.account_active ?? true }; validateCollectionRecord('student', payload, data.students); await updateCollection('students', items => items.some(x => x.id === payload.id) ? items.map(x => x.id === payload.id ? payload : x) : [...items, payload]); setOpen(false); setForm(emptyStudent); };
-  const edit = s => { setForm(s); setOpen(true); }; const remove = async id => { if (!confirmDeleteAction('this student record')) return; await updateCollection('students', items => items.filter(x => x.id !== id)); };
+  const save = async e => {
+    e.preventDefault();
+    const prefix = numberPrefix(data.schoolSettings.school_name, 'STU');
+    const selectedClass = data.classes.find(c => c.id === form.class_id);
+    const payload = { ...form, id: form.id || uid(), student_number: form.student_number || `${prefix}${String(data.students.length + 2001).padStart(5,'0')}`, student_section: form.student_section || selectedClass?.section || '', account_active: form.account_active ?? true };
+    validateCollectionRecord('student', payload, data.students);
+    const nextStudents = data.students.some(x => x.id === payload.id) ? data.students.map(x => x.id === payload.id ? payload : x) : [...data.students, payload];
+    const nextParents = deriveParentsFromStudents(nextStudents, data.parents);
+    await updateCollection('students', () => nextStudents);
+    await updateCollection('parents', () => nextParents);
+    setOpen(false);
+    setForm(emptyStudent);
+  };
+  const edit = s => { setForm(s); setOpen(true); };
+  const remove = async id => {
+    if (!confirmDeleteAction('this student record')) return;
+    const nextStudents = data.students.filter(x => x.id !== id);
+    const nextParents = deriveParentsFromStudents(nextStudents, data.parents);
+    await updateCollection('students', () => nextStudents);
+    await updateCollection('parents', () => nextParents);
+  };
   const runAutoPromotion = async () => {
     const term3Students = data.students.filter(student => evaluatePromotion(data, student, promotionYear).evaluated);
     if (!term3Students.length) { notify('info', `No Term 3 grades were found for ${promotionYear}.`); return; }
