@@ -164,12 +164,33 @@ function normalizeFooterThemeChoice(value) { return FOOTER_THEME_OPTIONS[value] 
 function normalizeFontChoice(value) { return FONT_OPTIONS[value] ? value : 'inter'; }
 function isThemeConstraintError(message) { return /school_settings_theme_choice_check|theme_choice/i.test(String(message || '')); }
 
-const defaultSchool = { school_name: 'Wood-World Missions Int. School', address: '', contact: '', location: '', logo_url: '', theme_choice: 'emerald', header_theme_choice: 'softWhite', footer_theme_choice: 'midnight', login_background_url: '', font_choice: 'inter', principal_signature_url: '' };
+const defaultSchool = { school_name: 'Wood-World Missions Int. School', address: '', contact: '', location: '', logo_url: '', theme_choice: 'emerald', header_theme_choice: 'softWhite', footer_theme_choice: 'midnight', login_background_url: '', font_choice: 'inter', principal_signature_url: '', audio_greeting_enabled: true, login_greeting_template: 'Welcome {firstName}, You may proceed.', logout_greeting_message: 'Goodbye, Nice having you on board.', failed_login_greeting_message: 'Login fails, please verify your identity carefully or contact your school IT department to ratify the issue.' };
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const today = () => new Date().toISOString().slice(0,10);
 const safeArray = v => Array.isArray(v) ? v : [];
 
 const fullClassName = cls => cls ? [cls.name, cls.section].filter(Boolean).join(' ') : '';
+function extractTrailingSequence(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/(\d+)(?!.*\d)/);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+}
+function compareIdentifierSequence(a, b) {
+  const seqDiff = extractTrailingSequence(a) - extractTrailingSequence(b);
+  if (seqDiff !== 0) return seqDiff;
+  return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
+}
+function sortTeachersByStaffNumber(items=[]) {
+  return [...safeArray(items)].sort((left, right) => compareIdentifierSequence(left?.staff_number, right?.staff_number));
+}
+function sortStudentsByStudentNumber(items=[]) {
+  return [...safeArray(items)].sort((left, right) => compareIdentifierSequence(left?.student_number, right?.student_number));
+}
+function nextGeneratedSequence(items=[], key='staff_number', startAt=1001) {
+  const sequences = safeArray(items).map(item => extractTrailingSequence(item?.[key])).filter(Number.isFinite);
+  const maxSequence = sequences.length ? Math.max(...sequences.filter(v => v !== Number.MAX_SAFE_INTEGER), startAt - 1) : (startAt - 1);
+  return maxSequence + 1;
+}
 function normalizeCrossModuleConsistency(raw={}) {
   const classes = safeArray(raw.classes);
   const subjects = safeArray(raw.subjects);
@@ -179,21 +200,21 @@ function normalizeCrossModuleConsistency(raw={}) {
   const subjectIds = new Set(subjects.map(item => item.id));
   const teacherIds = new Set(teachersBase.map(item => item.id));
 
-  const teachers = teachersBase.map(item => ({
+  const teachers = sortTeachersByStaffNumber(teachersBase.map(item => ({
     ...item,
     assigned_class_ids: safeArray(item.assigned_class_ids).filter(id => classIds.has(id)),
     assigned_subject_ids: safeArray(item.assigned_subject_ids).filter(id => subjectIds.has(id))
-  }));
+  })));
 
   const studentMap = new Map(studentsBase.map(item => [item.id, item]));
-  const students = studentsBase.map(item => {
+  const students = sortStudentsByStudentNumber(studentsBase.map(item => {
     const matchedClass = classes.find(cls => cls.id === item.class_id);
     return {
       ...item,
       class_id: matchedClass ? item.class_id : '',
       student_section: matchedClass ? (item.student_section || matchedClass.section || '') : (item.student_section || '')
     };
-  });
+  }));
   const normalizedStudentMap = new Map(students.map(item => [item.id, item]));
   const studentIds = new Set(students.map(item => item.id));
 
@@ -264,7 +285,11 @@ function normalizeCrossModuleConsistency(raw={}) {
       theme_choice: normalizeThemeChoice(raw.schoolSettings?.theme_choice || defaultSchool.theme_choice),
       header_theme_choice: normalizeHeaderThemeChoice(raw.schoolSettings?.header_theme_choice || defaultSchool.header_theme_choice),
       footer_theme_choice: normalizeFooterThemeChoice(raw.schoolSettings?.footer_theme_choice || defaultSchool.footer_theme_choice),
-      font_choice: normalizeFontChoice(raw.schoolSettings?.font_choice || defaultSchool.font_choice)
+      font_choice: normalizeFontChoice(raw.schoolSettings?.font_choice || defaultSchool.font_choice),
+      audio_greeting_enabled: raw.schoolSettings?.audio_greeting_enabled !== false,
+      login_greeting_template: String(raw.schoolSettings?.login_greeting_template || defaultSchool.login_greeting_template),
+      logout_greeting_message: String(raw.schoolSettings?.logout_greeting_message || defaultSchool.logout_greeting_message),
+      failed_login_greeting_message: String(raw.schoolSettings?.failed_login_greeting_message || defaultSchool.failed_login_greeting_message)
     },
     teachers,
     students,
@@ -1917,6 +1942,20 @@ function extractFirstName(fullName) {
   if (!cleaned) return 'User';
   return cleaned.split(' ')[0] || 'User';
 }
+function resolveGreetingMessage(template, fallback, context={}) {
+  const source = String(template || '').trim() || String(fallback || '').trim();
+  if (!source) return '';
+  return source
+    .replace(/\{firstName\}/gi, context.firstName || 'User')
+    .replace(/\{fullname\}|\{fullName\}|\{name\}/gi, context.fullName || context.firstName || 'User')
+    .replace(/\{schoolName\}/gi, context.schoolName || defaultSchool.school_name || 'School Management System')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function maybeSpeakGreeting(schoolSettings={}, message='') {
+  if (schoolSettings?.audio_greeting_enabled === false) return;
+  speakMessage(message);
+}
 function speakMessage(message) {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
   const text = String(message || '').trim();
@@ -2041,13 +2080,15 @@ function App() {
     setForcePasswordModal(credential.force_password_change === 'Yes');
     const displayName = resolveCredentialDisplayName(store.data, credential);
     const firstName = extractFirstName(displayName);
-    speakMessage(`Welcome ${firstName}, You may proceed.`);
+    const greetingMessage = resolveGreetingMessage(store.data.schoolSettings?.login_greeting_template, defaultSchool.login_greeting_template, { firstName, fullName: displayName, schoolName: store.data.schoolSettings?.school_name || defaultSchool.school_name });
+    maybeSpeakGreeting(store.data.schoolSettings, greetingMessage);
     return credential;
   }, [store]);
 
   const logout = React.useCallback(async () => {
     if (session.role) await store.setPresenceStatus(session.role, session.linkedId, false);
-    speakMessage('Goodbye, Nice having you on board.');
+    const goodbyeMessage = resolveGreetingMessage(store.data.schoolSettings?.logout_greeting_message, defaultSchool.logout_greeting_message, { schoolName: store.data.schoolSettings?.school_name || defaultSchool.school_name });
+    maybeSpeakGreeting(store.data.schoolSettings, goodbyeMessage);
     clearAppUserSession();
     setSession({ role: null, linkedId: null, credentialId: null, username: '' });
     setActiveNav('dashboard');
@@ -2106,7 +2147,8 @@ function LoginScreen() {
       const loginErrorMessage = err?.message || 'Login failed.';
       setError(loginErrorMessage);
       notify('error', loginErrorMessage);
-      speakMessage('Login fails, please verify your identity carefully or contact your school IT department to ratify the issue.');
+      const failedMessage = resolveGreetingMessage(data.schoolSettings?.failed_login_greeting_message, defaultSchool.failed_login_greeting_message, { schoolName: data.schoolSettings?.school_name || defaultSchool.school_name });
+      maybeSpeakGreeting(data.schoolSettings, failedMessage);
     } finally {
       setLoading(false);
     }
@@ -2383,7 +2425,7 @@ function TeacherManagement() {
       'Account': row.account_active ? 'Active' : 'Inactive'
     }))
   });
-  const save = async e => { e.preventDefault(); const prefix = numberPrefix(data.schoolSettings.school_name, 'TCH'); const payload = { ...form, id: form.id || uid(), staff_number: form.staff_number || `${prefix}${String(data.teachers.length + 1001).padStart(5,'0')}`, account_active: form.account_active ?? true }; validateCollectionRecord('teacher', payload, data.teachers); await updateCollection('teachers', items => items.some(x => x.id === payload.id) ? items.map(x => x.id === payload.id ? payload : x) : [...items, payload]); setOpen(false); setForm(emptyTeacher); };
+  const save = async e => { e.preventDefault(); const prefix = numberPrefix(data.schoolSettings.school_name, 'TCH'); const nextSequence = nextGeneratedSequence(data.teachers, 'staff_number', 1001); const payload = { ...form, id: form.id || uid(), staff_number: form.staff_number || `${prefix}${String(nextSequence).padStart(5,'0')}`, account_active: form.account_active ?? true }; validateCollectionRecord('teacher', payload, data.teachers); await updateCollection('teachers', items => items.some(x => x.id === payload.id) ? items.map(x => x.id === payload.id ? payload : x) : [...items, payload]); setOpen(false); setForm(emptyTeacher); };
   const edit = t => { setForm(t); setOpen(true); };
   const remove = async id => { if (!confirmDeleteAction('this teacher record')) return; await updateCollection('teachers', items => items.filter(x => x.id !== id)); };
   return <div className="space-y-4"><SectionHeader title="Teachers Management" subtitle="Assign classes and subjects only from School Admin Classes and Subjects." actions={<><PrintButton label="Print Teachers Records" onClick={printTeachers} /><button onClick={() => { setForm(emptyTeacher); setOpen(true); }} className="btn btn-primary"><i className="fas fa-plus mr-2"></i>Add Teacher</button></>} /><Table columns={['Photo','Staff No','Full Name','Assigned Subjects','Assigned Classes','Qualification','EMIS','Ghana Card','Gender','Date of Birth','Training','Primary Specialty','Account','Actions']} rows={data.teachers} renderCell={(row,c) => { if (c === 'Photo') return row.photo_url ? <img src={row.photo_url} className="w-10 h-10 rounded-full object-cover" /> : <i className="fas fa-user-circle text-2xl text-slate-400"></i>; if (c === 'Staff No') return row.staff_number; if (c === 'Full Name') return row.full_name; if (c === 'Assigned Subjects') return teacherSubjectNames(row); if (c === 'Assigned Classes') return teacherClassNames(row); if (c === 'Qualification') return row.qualification; if (c === 'EMIS') return row.emis_code; if (c === 'Ghana Card') return row.ghana_card; if (c === 'Gender') return row.gender; if (c === 'Date of Birth') return row.dob; if (c === 'Training') return row.trained; if (c === 'Primary Specialty') return row.primary_specialty; if (c === 'Account') return <span className={`pill ${row.account_active ? 'online' : 'offline'}`}>{row.account_active ? 'Active' : 'Inactive'}</span>; if (c === 'Actions') return <div className="flex gap-2"><button className="btn btn-outline" onClick={() => edit(row)}>Edit</button><button className="btn btn-danger" onClick={() => remove(row.id)}>Delete</button></div>; }} /><Modal open={open} onClose={() => setOpen(false)} title={form.id ? 'Edit Teacher' : 'Add Teacher'} max="max-w-5xl"><form onSubmit={save} className="space-y-4"><ImageInput label="Teacher Photo" storageFolder="teachers" value={form.photo_url} onChange={v => setForm({ ...form, photo_url: v })} /><div className="grid md:grid-cols-2 gap-4"><Field label="Full Name"><input className="input" required value={form.full_name} onChange={e => setForm({ ...form, full_name: e.target.value })} /></Field><Field label="Teacher EMIS Code"><input className="input" value={form.emis_code} onChange={e => setForm({ ...form, emis_code: e.target.value })} /></Field><Field label="Ghana Card"><input className="input" value={form.ghana_card} onChange={e => setForm({ ...form, ghana_card: e.target.value })} /></Field><Field label="Gender"><select className="select" value={form.gender} onChange={e => setForm({ ...form, gender: e.target.value })}>{GENDERS.map(x => <option key={x}>{x}</option>)}</select></Field><Field label="Date of Birth"><input type="date" className="input" value={form.dob} onChange={e => setForm({ ...form, dob: e.target.value })} /></Field><Field label="Qualification"><select className="select" value={form.qualification} onChange={e => setForm({ ...form, qualification: e.target.value })}>{QUALIFICATIONS.map(x => <option key={x}>{x}</option>)}</select></Field><Field label="Training Status"><select className="select" value={form.trained} onChange={e => setForm({ ...form, trained: e.target.value })}>{TRAINING_STATUS.map(x => <option key={x}>{x}</option>)}</select></Field><Field label="Primary Specialty"><input className="input" value={form.primary_specialty} onChange={e => setForm({ ...form, primary_specialty: e.target.value })} /></Field><Field label="Contact Address"><input className="input" value={form.contact_address} onChange={e => setForm({ ...form, contact_address: e.target.value })} /></Field><Field label="Staff Number"><input className="input" value={form.staff_number} readOnly placeholder="Auto generated by school name" /></Field></div><MultiCheckbox label="Assign Subjects" items={data.subjects} value={form.assigned_subject_ids} onChange={v => setForm({ ...form, assigned_subject_ids: v })} getLabel={s => `${s.name}${s.code ? ` (${s.code})` : ''}`} /><MultiCheckbox label="Assign Classes" items={data.classes} value={form.assigned_class_ids} onChange={v => setForm({ ...form, assigned_class_ids: v })} getLabel={c => fullClassName(c)} /><div className="flex justify-end gap-2"><button type="button" className="btn btn-secondary" onClick={() => setOpen(false)}>Cancel</button><button type="submit" className="btn btn-primary">Save Teacher</button></div></form></Modal></div>;
@@ -2414,7 +2456,7 @@ function StudentManagement() {
       };
     })
   });
-  const save = async e => { e.preventDefault(); const prefix = numberPrefix(data.schoolSettings.school_name, 'STU'); const selectedClass = data.classes.find(c => c.id === form.class_id); const payload = { ...form, id: form.id || uid(), student_number: form.student_number || `${prefix}${String(data.students.length + 2001).padStart(5,'0')}`, student_section: form.student_section || selectedClass?.section || '', account_active: form.account_active ?? true }; validateCollectionRecord('student', payload, data.students); await updateCollection('students', items => items.some(x => x.id === payload.id) ? items.map(x => x.id === payload.id ? payload : x) : [...items, payload]); setOpen(false); setForm(emptyStudent); };
+  const save = async e => { e.preventDefault(); const prefix = numberPrefix(data.schoolSettings.school_name, 'STU'); const selectedClass = data.classes.find(c => c.id === form.class_id); const nextSequence = nextGeneratedSequence(data.students, 'student_number', 2001); const payload = { ...form, id: form.id || uid(), student_number: form.student_number || `${prefix}${String(nextSequence).padStart(5,'0')}`, student_section: form.student_section || selectedClass?.section || '', account_active: form.account_active ?? true }; validateCollectionRecord('student', payload, data.students); await updateCollection('students', items => items.some(x => x.id === payload.id) ? items.map(x => x.id === payload.id ? payload : x) : [...items, payload]); setOpen(false); setForm(emptyStudent); };
   const edit = s => { setForm(s); setOpen(true); }; const remove = async id => { if (!confirmDeleteAction('this student record')) return; await updateCollection('students', items => items.filter(x => x.id !== id)); };
   const runAutoPromotion = async () => {
     await runAutoPromotionAcrossRecords({ data, updateCollection, notify, addArchiveRecord, academicYear: promotionYear });
@@ -2606,6 +2648,43 @@ function SchoolSettingsManager() {
             <div>
               <div className="text-sm font-semibold text-slate-700 mb-3">Quick theme buttons</div>
               <div className="flex flex-wrap gap-3">{Object.entries(THEME_OPTIONS).map(([key, val]) => <button key={key} type="button" onClick={() => previewTheme(key)} className={`px-4 py-3 rounded-xl border ${themeChoice === key ? 'ring-2 ring-offset-2' : ''}`} style={{ background: val.primarySoft, borderColor: val.primary }}><span className="inline-flex items-center gap-2"><span className="w-4 h-4 rounded-full" style={{ background: val.primary }}></span>{val.label}</span></button>)}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-4">
+              <div>
+                <div className="font-bold text-base">Audio Greeting Personalization</div>
+                <div className="text-sm text-slate-500 mt-1">School Admin can turn the audio greeting on or off and fully customize the spoken messages for login, logout, and failed login.</div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="flex-1 min-w-[220px]">
+                  <div className="font-semibold text-slate-800">Audio Greeting Switch</div>
+                  <div className="text-xs text-slate-500 mt-1">When this switch is turned on, the spoken greeting messages take effect across the system. When it is turned off, all greeting voice messages stop.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, audio_greeting_enabled: !(form.audio_greeting_enabled !== false) })}
+                  className={`relative inline-flex h-11 w-24 items-center rounded-full transition ${form.audio_greeting_enabled !== false ? 'bg-emerald-600' : 'bg-slate-300'}`}
+                  aria-pressed={form.audio_greeting_enabled !== false}
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-xs font-bold text-slate-700 shadow transition" style={{ transform: `translateX(${form.audio_greeting_enabled !== false ? '48px' : '4px'})` }}>{form.audio_greeting_enabled !== false ? 'ON' : 'OFF'}</span>
+                </button>
+              </div>
+              <div className="grid gap-4">
+                <Field label="Login Audio Message">
+                  <textarea className="textarea" rows="2" value={form.login_greeting_template || ''} onChange={e => setForm({ ...form, login_greeting_template: e.target.value })} placeholder="Use {firstName} where the user's first name should be spoken." />
+                </Field>
+                <Field label="Logout Audio Message">
+                  <textarea className="textarea" rows="2" value={form.logout_greeting_message || ''} onChange={e => setForm({ ...form, logout_greeting_message: e.target.value })} />
+                </Field>
+                <Field label="Failed Login Audio Message">
+                  <textarea className="textarea" rows="3" value={form.failed_login_greeting_message || ''} onChange={e => setForm({ ...form, failed_login_greeting_message: e.target.value })} />
+                </Field>
+              </div>
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-700">
+                <div className="font-semibold mb-2">Preview guide</div>
+                <div>Login preview: {resolveGreetingMessage(form.login_greeting_template, defaultSchool.login_greeting_template, { firstName: 'Ephraim', fullName: 'Ephraim Owusu', schoolName: form.school_name || defaultSchool.school_name })}</div>
+                <div className="mt-1">Logout preview: {resolveGreetingMessage(form.logout_greeting_message, defaultSchool.logout_greeting_message, { schoolName: form.school_name || defaultSchool.school_name })}</div>
+                <div className="mt-1">Failed login preview: {resolveGreetingMessage(form.failed_login_greeting_message, defaultSchool.failed_login_greeting_message, { schoolName: form.school_name || defaultSchool.school_name })}</div>
+              </div>
             </div>
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">All personalization now stays unified here for the School Admin only.</div>
           </div>
