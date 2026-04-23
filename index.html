@@ -85,6 +85,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_s_GHOyvK1h5Uf3yddS8QQA_IpYTqabj';
 const hasSupabaseCreds = !SUPABASE_URL.includes('YOUR_PROJECT') && !SUPABASE_ANON_KEY.includes('YOUR_SUPABASE');
 const supabase = hasSupabaseCreds ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const offlineStore = localforage.createInstance({ name: 'school_mgmt_final_v1' });
+const FAST_UI_MODE = true;
 
 const ROLE_LABELS = { admin: 'School Admin', teacher: 'Teacher', student: 'Student', parent: 'Parent', accountant: 'Accounts Office Staff', principal: 'Principal' };
 const QUALIFICATIONS = ['PhD', 'MSc Degree', 'Bachelor Degree', 'HND', 'Diploma', 'SHS'];
@@ -1395,7 +1396,7 @@ function usePersistentSchoolData() {
   const notify = React.useCallback((type, message) => {
     const id = uid();
     setNotifications(prev => [...prev, { id, type, message }]);
-    window.setTimeout(() => setNotifications(prev => prev.filter(item => item.id !== id)), 3200);
+    window.setTimeout(() => setNotifications(prev => prev.filter(item => item.id !== id)), 1800);
   }, []);
   const notifyOnce = React.useCallback((key, type, message) => {
     if (lastNoticeRef.current === key) return;
@@ -1403,7 +1404,7 @@ function usePersistentSchoolData() {
     notify(type, message);
     window.setTimeout(() => {
       if (lastNoticeRef.current === key) lastNoticeRef.current = '';
-    }, 2500);
+    }, 1200);
   }, [notify]);
   const dismissNotification = React.useCallback((id) => setNotifications(prev => prev.filter(item => item.id !== id)), []);
 
@@ -1549,7 +1550,7 @@ function usePersistentSchoolData() {
 
   React.useEffect(() => {
     if (!loaded || !supabase || !offlineState.isOnline || !offlineState.pendingCount || offlineState.syncing) return;
-    const timer = window.setTimeout(() => { flushPendingChanges(); }, 900);
+    const timer = window.setTimeout(() => { flushPendingChanges(); }, 0);
     return () => window.clearTimeout(timer);
   }, [loaded, offlineState.isOnline, offlineState.pendingCount, offlineState.syncing, flushPendingChanges]);
 
@@ -1561,7 +1562,7 @@ function usePersistentSchoolData() {
       if (!queue.length) return;
       setOfflineState(prev => ({ ...prev, isOnline: true, pendingCount: queue.length }));
       await flushPendingChanges();
-    }, 5000);
+    }, 1200);
     return () => window.clearInterval(intervalId);
   }, [loaded, flushPendingChanges]);
 
@@ -1572,11 +1573,12 @@ function usePersistentSchoolData() {
 
   const setSchoolSettings = React.useCallback(async updater => {
     const nextVal = typeof updater === 'function' ? updater(data.schoolSettings) : updater;
+    const nextData = { ...data, schoolSettings: nextVal };
     try {
-      setBusyText(browserOnline() ? 'Saving school settings...' : 'Saving school settings locally...');
+      if (!FAST_UI_MODE) setBusyText(browserOnline() ? 'Saving school settings...' : 'Saving school settings locally...');
+      setData(nextData);
+      await writeOfflineCache(nextData, { pendingCount: offlineState.pendingCount, lastSyncAt: offlineState.lastSyncAt || '' });
       if (!supabase || !browserOnline()) {
-        const nextData = { ...data, schoolSettings: nextVal };
-        setData(nextData);
         const pendingCount = supabase ? await appendOfflineQueue({ type: 'schoolSettings', nextVal, created_at: new Date().toISOString() }) : offlineState.pendingCount;
         await writeOfflineCache(nextData, { pendingCount, lastSyncAt: offlineState.lastSyncAt || '' });
         setOfflineState(prev => ({ ...prev, isOnline: browserOnline(), hasCache: true, pendingCount, lastSyncAt: prev.lastSyncAt }));
@@ -1584,14 +1586,19 @@ function usePersistentSchoolData() {
         return;
       }
       await syncSchoolSettingsValue(nextVal);
-      await reloadData({ silent: true });
+      const nowIso = new Date().toISOString();
+      await writeOfflineCache(nextData, { pendingCount: offlineState.pendingCount, lastSyncAt: nowIso });
+      setOfflineState(prev => ({ ...prev, isOnline: true, hasCache: true, lastSyncAt: nowIso }));
+      reloadData({ silent: true }).catch(() => {});
       notify('success', 'School settings saved.');
     } catch (error) {
       console.error('School settings save failed', error);
+      setData(data);
+      await writeOfflineCache(data, { pendingCount: offlineState.pendingCount, lastSyncAt: offlineState.lastSyncAt || '' });
       notify('error', error?.message || 'Failed to save school settings.');
       throw error;
     } finally {
-      setBusyText('');
+      if (!FAST_UI_MODE) setBusyText('');
     }
   }, [data, offlineState.pendingCount, offlineState.lastSyncAt, notify, reloadData, syncSchoolSettingsValue]);
 
@@ -1599,15 +1606,16 @@ function usePersistentSchoolData() {
     const prevItems = clonePlain(data[key] || []);
     const nextItems = clonePlain(typeof updater === 'function' ? updater(prevItems) : updater);
     const { silentSuccess=false, suppressBusy=false, offlineNotice=true, optimistic=false, successMessage='', offlineSuccessMessage='' } = options || {};
+    const useOptimistic = FAST_UI_MODE || optimistic;
     const nextData = { ...data, [key]: nextItems };
     try {
-      if (!suppressBusy) setBusyText(browserOnline() ? `Saving ${key}...` : `Saving ${key} locally...`);
-      if (optimistic) {
+      if (!suppressBusy && !FAST_UI_MODE) setBusyText(browserOnline() ? `Saving ${key}...` : `Saving ${key} locally...`);
+      if (useOptimistic) {
         setData(nextData);
         await writeOfflineCache(nextData, { pendingCount: offlineState.pendingCount, lastSyncAt: offlineState.lastSyncAt || '' });
       }
       if (!supabase || !browserOnline()) {
-        if (!optimistic) setData(nextData);
+        if (!useOptimistic) setData(nextData);
         const pendingCount = supabase ? await appendOfflineQueue({ type: 'collection', key, prevItems, nextItems, created_at: new Date().toISOString() }) : offlineState.pendingCount;
         await writeOfflineCache(nextData, { pendingCount, lastSyncAt: offlineState.lastSyncAt || '' });
         setOfflineState(prev => ({ ...prev, isOnline: browserOnline(), hasCache: true, pendingCount, lastSyncAt: prev.lastSyncAt }));
@@ -1618,17 +1626,14 @@ function usePersistentSchoolData() {
         return;
       }
       await syncCollectionByKey(key, prevItems, nextItems);
-      if (!optimistic) {
-        await reloadData({ silent: true });
-      } else {
-        const nowIso = new Date().toISOString();
-        await writeOfflineCache(nextData, { pendingCount: offlineState.pendingCount, lastSyncAt: nowIso });
-        setOfflineState(prev => ({ ...prev, isOnline: true, hasCache: true, lastSyncAt: nowIso }));
-        reloadData({ silent: true }).catch(() => {});
-      }
+      const nowIso = new Date().toISOString();
+      await writeOfflineCache(nextData, { pendingCount: offlineState.pendingCount, lastSyncAt: nowIso });
+      setOfflineState(prev => ({ ...prev, isOnline: true, hasCache: true, lastSyncAt: nowIso }));
+      if (useOptimistic) reloadData({ silent: true }).catch(() => {});
+      else await reloadData({ silent: true });
       if (!silentSuccess) notify('success', successMessage || `${key} saved successfully.`);
     } catch (error) {
-      if (optimistic) {
+      if (useOptimistic) {
         const rollbackData = { ...data, [key]: prevItems };
         setData(rollbackData);
         await writeOfflineCache(rollbackData, { pendingCount: offlineState.pendingCount, lastSyncAt: offlineState.lastSyncAt || '' });
@@ -1637,7 +1642,7 @@ function usePersistentSchoolData() {
       notify('error', error?.message || `Failed to save ${key}.`);
       throw error;
     } finally {
-      if (!suppressBusy) setBusyText('');
+      if (!suppressBusy && !FAST_UI_MODE) setBusyText('');
     }
   }, [data, offlineState.pendingCount, offlineState.lastSyncAt, notify, reloadData, syncCollectionByKey]);
 
@@ -1727,6 +1732,55 @@ function linkedEntityName(data, role, linkedId) {
   const collection = role === 'teacher' ? data.teachers : role === 'student' ? data.students : role === 'parent' ? data.parents : role === 'accountant' ? data.accountStaff : role === 'principal' ? data.principals : [];
   return collection.find(x => x.id === linkedId)?.full_name || ROLE_LABELS[role];
 }
+function resolveCredentialDisplayName(data, credential) {
+  if (!credential) return '';
+  if (credential.role === 'admin') return 'School Admin';
+  return linkedEntityName(data, credential.role, credential.linked_entity_id) || credential.username || ROLE_LABELS[credential.role] || 'User';
+}
+function extractFirstName(fullName) {
+  const cleaned = String(fullName || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return 'User';
+  return cleaned.split(' ')[0] || 'User';
+}
+function speakMessage(message) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  const text = String(message || '').trim();
+  if (!text) return;
+  const speakNow = () => {
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices() || [];
+      const preferredVoice = voices.find(v => /en-(gb|us)/i.test(v.lang || '')) || voices.find(v => /^en/i.test(v.lang || '')) || voices[0];
+      if (preferredVoice) utterance.voice = preferredVoice;
+      utterance.lang = preferredVoice?.lang || 'en-GB';
+      utterance.rate = 0.96;
+      utterance.pitch = 1;
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      console.warn('Audio greeting failed', error);
+    }
+  };
+  const availableVoices = window.speechSynthesis.getVoices() || [];
+  if (availableVoices.length) {
+    speakNow();
+    return;
+  }
+  let spoken = false;
+  const handleVoicesChanged = () => {
+    if (spoken) return;
+    spoken = true;
+    window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+    speakNow();
+  };
+  window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged, { once: true });
+  setTimeout(() => {
+    if (spoken) return;
+    spoken = true;
+    window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+    speakNow();
+  }, 400);
+}
 function availableLinkedRecords(data, role) { if (role === 'teacher') return data.teachers; if (role === 'student') return data.students; if (role === 'parent') return data.parents; if (role === 'accountant') return data.accountStaff; if (role === 'principal') return data.principals; return []; }
 function getUnreadChatCount(chats, role, linkedId) {
   return (chats || []).filter(msg => {
@@ -1809,11 +1863,15 @@ function App() {
     saveAppUserSession(nextSession);
     setActiveNav('dashboard');
     setForcePasswordModal(credential.force_password_change === 'Yes');
+    const displayName = resolveCredentialDisplayName(store.data, credential);
+    const firstName = extractFirstName(displayName);
+    speakMessage(`${firstName}, welcome you have successfully logged in, you may proceed.`);
     return credential;
   }, [store]);
 
   const logout = React.useCallback(async () => {
     if (session.role) await store.setPresenceStatus(session.role, session.linkedId, false);
+    speakMessage('Goodbye.');
     clearAppUserSession();
     setSession({ role: null, linkedId: null, credentialId: null, username: '' });
     setActiveNav('dashboard');
