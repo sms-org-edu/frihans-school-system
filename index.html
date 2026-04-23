@@ -37,7 +37,10 @@
     .sidebar-scroll { max-height: calc(100vh - 80px); overflow: auto; }
     .card { background: var(--theme-card-bg); border-radius: 1rem; box-shadow: 0 8px 30px rgba(15, 23, 42, 0.07); }
     .system-footer { background: var(--theme-footer-bg); color: var(--theme-footer-text); border-top: 1px solid rgba(255,255,255,.08); }
+    .system-footer-subtle { color: color-mix(in srgb, var(--theme-footer-text) 82%, transparent); }
     .header-theme-chip { background: var(--theme-header-accent); color: var(--theme-header-text); border: 1px solid rgba(15,23,42,.08); }
+    .header-theme-button { background: color-mix(in srgb, var(--theme-header-accent) 65%, white); color: var(--theme-header-text); border-color: color-mix(in srgb, var(--theme-header-text) 16%, white); }
+    .header-theme-button:hover { background: color-mix(in srgb, var(--theme-header-accent) 82%, white); }
     .table-wrap { overflow: auto; }
     th, td { white-space: nowrap; }
     .input, .select, .textarea { width: 100%; border: 1px solid #d1d5db; border-radius: .75rem; padding: .65rem .8rem; background: white; }
@@ -144,6 +147,7 @@ const HEADMASTER_SIGNATURE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUh
 function normalizeThemeChoice(value) { return THEME_OPTIONS[value] ? value : 'emerald'; }
 function normalizeHeaderThemeChoice(value) { return HEADER_THEME_OPTIONS[value] ? value : 'softWhite'; }
 function normalizeFooterThemeChoice(value) { return FOOTER_THEME_OPTIONS[value] ? value : 'midnight'; }
+function isThemeConstraintError(message) { return /school_settings_theme_choice_check|theme_choice/i.test(String(message || '')); }
 
 const defaultSchool = { school_name: 'Wood-World Missions Int. School', address: '', contact: '', location: '', logo_url: '', theme_choice: 'emerald', header_theme_choice: 'softWhite', footer_theme_choice: 'midnight', principal_signature_url: '' };
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -1577,6 +1581,9 @@ function usePersistentSchoolData() {
       const fallback = await supabase.from('school_settings').update(fallbackPayload).eq('id', 1);
       error = fallback.error;
     }
+    if (error && isThemeConstraintError(error.message)) {
+      throw new Error('The backend theme list is outdated. Run the latest theme SQL update, then try saving the theme again.');
+    }
     if (error) throw error;
   }, []);
 
@@ -1857,8 +1864,9 @@ function AppFooter() {
   const schoolName = (data?.schoolSettings?.school_name || defaultSchool.school_name || 'School Management System').trim();
   const year = new Date().getFullYear();
   return (
-    <footer className="px-4 md:px-6 py-6 text-center text-xs md:text-sm text-slate-500">
-      <span>© {year} {schoolName}. All rights reserved.</span>
+    <footer className="system-footer px-4 md:px-6 py-6 text-center text-xs md:text-sm">
+      <div className="font-semibold tracking-wide">© {year} {schoolName}. All rights reserved.</div>
+      <div className="system-footer-subtle mt-1">Powered school wide footer theme is active across the system.</div>
     </footer>
   );
 }
@@ -2041,7 +2049,7 @@ function Header() {
       setRefreshing(false);
     }
   }, [flushPendingChanges, notify, refreshing, reloadData]);
-  return <header className="sticky-header px-3 md:px-6 py-2.5 md:py-3 flex items-center justify-between gap-3 no-print"><div className="flex items-center gap-2.5 md:gap-3 min-w-0 flex-1">{session.role && <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="md:hidden w-11 h-11 rounded-xl border border-slate-200 bg-white flex items-center justify-center shrink-0" aria-label="Open navigation menu"><i className={`fas ${mobileNavOpen ? 'fa-times' : 'fa-bars'} text-slate-700`}></i></button>}{data.schoolSettings.logo_url ? <img src={data.schoolSettings.logo_url} className="w-12 h-12 rounded-full object-cover border shrink-0" /> : <div className="w-12 h-12 rounded-full bg-[var(--theme-primary)] text-white flex items-center justify-center shrink-0"><i className="fas fa-school"></i></div>}<div className="min-w-0"><h1 className="text-base sm:text-lg md:text-2xl font-extrabold text-[color:var(--theme-header-text)] mobile-header-title break-words">{data.schoolSettings.school_name}</h1><p className="text-[11px] md:text-xs leading-tight opacity-80">{[data.schoolSettings.address, data.schoolSettings.contact, data.schoolSettings.location].filter(Boolean).join(' • ') || 'School Management System'}</p></div></div><div className="flex items-center gap-2 md:gap-3 shrink-0">{session.role && <><span className="pill header-theme-chip hidden sm:inline-flex"><i className="fas fa-user-shield"></i> {ROLE_LABELS[session.role]}</span><button type="button" onClick={handleRefresh} disabled={refreshing} className="btn btn-outline px-3 md:px-4 disabled:opacity-60 disabled:cursor-not-allowed" aria-label="Refresh system data" title="Refresh system data"><i className={`fas ${refreshing ? 'fa-spinner fa-spin' : 'fa-rotate-right'} md:mr-2`}></i><span className="hidden md:inline">Refresh</span></button></>}</div></header>;
+  return <header className="sticky-header px-3 md:px-6 py-2.5 md:py-3 flex items-center justify-between gap-3 no-print"><div className="flex items-center gap-2.5 md:gap-3 min-w-0 flex-1">{session.role && <button onClick={() => setMobileNavOpen(!mobileNavOpen)} className="md:hidden w-11 h-11 rounded-xl border border-slate-200 bg-white flex items-center justify-center shrink-0" aria-label="Open navigation menu"><i className={`fas ${mobileNavOpen ? 'fa-times' : 'fa-bars'} text-slate-700`}></i></button>}{data.schoolSettings.logo_url ? <img src={data.schoolSettings.logo_url} className="w-12 h-12 rounded-full object-cover border shrink-0" /> : <div className="w-12 h-12 rounded-full bg-[var(--theme-primary)] text-white flex items-center justify-center shrink-0"><i className="fas fa-school"></i></div>}<div className="min-w-0"><h1 className="text-base sm:text-lg md:text-2xl font-extrabold text-[color:var(--theme-header-text)] mobile-header-title break-words">{data.schoolSettings.school_name}</h1><p className="text-[11px] md:text-xs leading-tight opacity-80">{[data.schoolSettings.address, data.schoolSettings.contact, data.schoolSettings.location].filter(Boolean).join(' • ') || 'School Management System'}</p></div></div><div className="flex items-center gap-2 md:gap-3 shrink-0">{session.role && <><span className="pill header-theme-chip hidden sm:inline-flex"><i className="fas fa-user-shield"></i> {ROLE_LABELS[session.role]}</span><button type="button" onClick={handleRefresh} disabled={refreshing} className="btn btn-outline header-theme-button px-3 md:px-4 disabled:opacity-60 disabled:cursor-not-allowed" aria-label="Refresh system data" title="Refresh system data"><i className={`fas ${refreshing ? 'fa-spinner fa-spin' : 'fa-rotate-right'} md:mr-2`}></i><span className="hidden md:inline">Refresh</span></button></>}</div></header>;
 }
 
 function LoginScreen() {
