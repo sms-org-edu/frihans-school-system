@@ -2000,13 +2000,13 @@ function App() {
     setForcePasswordModal(credential.force_password_change === 'Yes');
     const displayName = resolveCredentialDisplayName(store.data, credential);
     const firstName = extractFirstName(displayName);
-    speakMessage(`${firstName}, welcome you have successfully logged in, you may proceed.`);
+    speakMessage(`Welcome ${firstName}, You may proceed.`);
     return credential;
   }, [store]);
 
   const logout = React.useCallback(async () => {
     if (session.role) await store.setPresenceStatus(session.role, session.linkedId, false);
-    speakMessage('Goodbye.');
+    speakMessage('Goodbye, Nice having you on board.');
     clearAppUserSession();
     setSession({ role: null, linkedId: null, credentialId: null, username: '' });
     setActiveNav('dashboard');
@@ -2062,8 +2062,10 @@ function LoginScreen() {
       requestBrowserNotificationPermission();
       notify('success', 'Signed in successfully.');
     } catch (err) {
-      setError(err?.message || 'Login failed.');
-      notify('error', err?.message || 'Login failed.');
+      const loginErrorMessage = err?.message || 'Login failed.';
+      setError(loginErrorMessage);
+      notify('error', loginErrorMessage);
+      speakMessage('Login fails, please verify your identity carefully or contact your school IT department to ratify the issue.');
     } finally {
       setLoading(false);
     }
